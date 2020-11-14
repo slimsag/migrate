@@ -1,6 +1,7 @@
 package neo4j
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -19,10 +20,10 @@ var (
 	opts = dktest.Options{PortRequired: true, ReadyFunc: isReady,
 		Env: map[string]string{"NEO4J_AUTH": "neo4j/migratetest", "NEO4J_ACCEPT_LICENSE_AGREEMENT": "yes"}}
 	specs = []dktesting.ContainerSpec{
+		{ImageName: "neo4j:4.0", Options: opts},
+		{ImageName: "neo4j:4.0-enterprise", Options: opts},
 		{ImageName: "neo4j:3.5", Options: opts},
 		{ImageName: "neo4j:3.5-enterprise", Options: opts},
-		{ImageName: "neo4j:3.4", Options: opts},
-		{ImageName: "neo4j:3.4-enterprise", Options: opts},
 	}
 )
 
@@ -36,7 +37,12 @@ func isReady(ctx context.Context, c dktest.ContainerInfo) bool {
 		return false
 	}
 
-	driver, err := neo4j.NewDriver(neoConnectionString(ip, port), neo4j.BasicAuth("neo4j", "migratetest", ""))
+	driver, err := neo4j.NewDriver(
+		neoConnectionString(ip, port),
+		neo4j.BasicAuth("neo4j", "migratetest", ""),
+		func(config *neo4j.Config) {
+			config.Encrypted = false
+		})
 	if err != nil {
 		return false
 	}
@@ -88,7 +94,8 @@ func TestMigrate(t *testing.T) {
 		}
 
 		n := &Neo4j{}
-		d, err := n.Open(neoConnectionString(ip, port))
+		neoUrl := neoConnectionString(ip, port) + "/?x-multi-statement=true"
+		d, err := n.Open(neoUrl)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -102,5 +109,30 @@ func TestMigrate(t *testing.T) {
 			t.Fatal(err)
 		}
 		dt.TestMigrate(t, m)
+	})
+}
+
+func TestMalformed(t *testing.T) {
+	dktesting.ParallelTest(t, specs, func(t *testing.T, c dktest.ContainerInfo) {
+		ip, port, err := c.Port(7687)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		n := &Neo4j{}
+		d, err := n.Open(neoConnectionString(ip, port))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := d.Close(); err != nil {
+				t.Error(err)
+			}
+		}()
+
+		migration := bytes.NewReader([]byte("CREATE (a {qid: 1) RETURN a"))
+		if err := d.Run(migration); err == nil {
+			t.Fatal("expected failure for malformed migration")
+		}
 	})
 }
